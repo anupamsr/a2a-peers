@@ -383,19 +383,29 @@ def _process_status(name: str) -> str:
     return "alive" if pid_alive(pid) else "dead"
 
 
-def _cached_session_id(name: str) -> str:
+def _cached_session_id(name: str) -> str | None:
     try:
         cached = state.list_cached(name)
     except Exception:
-        return "-"
+        return None
     ref = cached.get(name)
     if ref is not None:
         return ref.id
     if len(cached) == 1:
         return next(iter(cached.values())).id
-    if cached:
-        return ", ".join(f"{n}={r.id}" for n, r in cached.items())
-    return "-"
+    return None
+
+
+def _attach_command(peer: Peer) -> str:
+    if peer.opencode_port is None:
+        return "-"
+    parts = [OPENCODE_BIN, "attach", f"http://127.0.0.1:{peer.opencode_port}"]
+    if peer.workspace:
+        parts += ["--dir", shlex.quote(peer.workspace)]
+    sid = _cached_session_id(peer.name)
+    if sid:
+        parts += ["-s", sid]
+    return " ".join(parts)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
@@ -403,7 +413,7 @@ def cmd_list(args: argparse.Namespace) -> int:
     if not peers:
         print("No peers registered.")
         return 0
-    rows: list[list[str]] = [["NAME", "A2A URL", "OC PORT", "OC LISTENING", "A2A PROC", "SESSION", "WORKSPACE"]]
+    rows: list[list[str]] = [["NAME", "A2A URL", "OC PORT", "OC LISTENING", "A2A PROC", "ATTACH"]]
     for peer in peers.values():
         if peer.opencode_port is not None:
             listening = "yes" if port_listening(peer.opencode_port) else "no"
@@ -416,8 +426,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 str(peer.opencode_port) if peer.opencode_port is not None else "-",
                 listening,
                 _process_status(peer.name),
-                _cached_session_id(peer.name),
-                peer.workspace or "-",
+                _attach_command(peer),
             ]
         )
     widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]

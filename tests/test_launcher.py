@@ -329,16 +329,26 @@ def test_list_external(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     assert launcher.main(["list"]) == 0
     out = capsys.readouterr().out
     assert "ext" in out and "external" in out
-    assert "SESSION" in out
+    assert "ATTACH" in out
+    assert "SESSION" not in out
+    assert "WORKSPACE" not in out
 
 
-def test_list_shows_cached_session(capsys) -> None:
-    launcher.main(["add", "ext", "--url", "http://127.0.0.1:9000"])
-    set_session("ext", "ext", SessionRef("opencode_session", "ses_abc123"))
+def test_list_shows_attach_command(capsys) -> None:
+    registry.upsert_peer(
+        registry.Peer(
+            name="oc",
+            url="http://127.0.0.1:9000",
+            token=None,
+            workspace="/tmp/ws",
+            opencode_port=4096,
+        )
+    )
+    set_session("oc", "oc", SessionRef("opencode_session", "ses_abc123"))
     capsys.readouterr()
     assert launcher.main(["list"]) == 0
     out = capsys.readouterr().out
-    assert "ses_abc123" in out
+    assert "opencode attach http://127.0.0.1:4096 --dir /tmp/ws -s ses_abc123" in out
 
 
 def test_check_unknown_peer(capsys) -> None:
