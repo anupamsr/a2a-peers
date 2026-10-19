@@ -7,6 +7,7 @@ import pytest
 
 from a2a_peers import launcher, registry
 from a2a_peers.launcher import LauncherError
+from a2a_peers.state import SessionRef, set_session
 
 
 @pytest.fixture(autouse=True)
@@ -328,6 +329,16 @@ def test_list_external(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     assert launcher.main(["list"]) == 0
     out = capsys.readouterr().out
     assert "ext" in out and "external" in out
+    assert "SESSION" in out
+
+
+def test_list_shows_cached_session(capsys) -> None:
+    launcher.main(["add", "ext", "--url", "http://127.0.0.1:9000"])
+    set_session("ext", "ext", SessionRef("opencode_session", "ses_abc123"))
+    capsys.readouterr()
+    assert launcher.main(["list"]) == 0
+    out = capsys.readouterr().out
+    assert "ses_abc123" in out
 
 
 def test_check_unknown_peer(capsys) -> None:

@@ -383,12 +383,27 @@ def _process_status(name: str) -> str:
     return "alive" if pid_alive(pid) else "dead"
 
 
+def _cached_session_id(name: str) -> str:
+    try:
+        cached = state.list_cached(name)
+    except Exception:
+        return "-"
+    ref = cached.get(name)
+    if ref is not None:
+        return ref.id
+    if len(cached) == 1:
+        return next(iter(cached.values())).id
+    if cached:
+        return ", ".join(f"{n}={r.id}" for n, r in cached.items())
+    return "-"
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     peers = registry.load_peers()
     if not peers:
         print("No peers registered.")
         return 0
-    rows: list[list[str]] = [["NAME", "A2A URL", "OC PORT", "OC LISTENING", "A2A PROC", "WORKSPACE"]]
+    rows: list[list[str]] = [["NAME", "A2A URL", "OC PORT", "OC LISTENING", "A2A PROC", "SESSION", "WORKSPACE"]]
     for peer in peers.values():
         if peer.opencode_port is not None:
             listening = "yes" if port_listening(peer.opencode_port) else "no"
@@ -401,6 +416,7 @@ def cmd_list(args: argparse.Namespace) -> int:
                 str(peer.opencode_port) if peer.opencode_port is not None else "-",
                 listening,
                 _process_status(peer.name),
+                _cached_session_id(peer.name),
                 peer.workspace or "-",
             ]
         )

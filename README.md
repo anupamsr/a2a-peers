@@ -61,7 +61,7 @@ sessions you want reachable still need a distinct title (`list_sessions` shows c
 Other commands:
 
 ```bash
-a2a-peers list                 # peers, ports, process status
+a2a-peers list                 # peers, ports, process status, session id
 a2a-peers check api            # card, auth (expects 401 without token), opencode reachable
 a2a-peers kill api [--forget]  # stop opencode-a2a (and remove from registry)
 a2a-peers add other --url https://agent.example.com [--token T]   # register a non-opencode A2A agent
