@@ -153,4 +153,6 @@ Starts `opencode-a2a serve` in background with env:
 `A2A_STATIC_AUTH_CREDENTIALS=[{"scheme":"bearer","token":T,"principal":N}]`, `OPENCODE_BASE_URL=http://127.0.0.1:P`,
 `A2A_TASK_STORE_DATABASE_URL=sqlite+aiosqlite:///<run_dir>/N.db`, `A2A_HOST=127.0.0.1`, `A2A_PORT=Q`,
 `A2A_PUBLIC_URL=http://127.0.0.1:Q`, `OPENCODE_WORKSPACE_ROOT=DIR`. Logs/pids in `run_dir()`.
-Writes registry, prints `cd DIR && opencode --port P`. Never starts opencode itself.
+Also starts `opencode --port P` in the workspace (unless that port is already listening), waits for
+`GET /global/health`, then `POST /session` with `{"title": N}` if no session of that title exists.
+`kill` stops both the opencode TUI and opencode-a2a (pid files `N.pid` and `N.opencode.pid`).

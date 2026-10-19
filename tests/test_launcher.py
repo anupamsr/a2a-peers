@@ -62,12 +62,13 @@ def test_launch_missing_binary(tmp_path: Path, no_spawn, monkeypatch, capsys) ->
     assert "opencode-a2a" in capsys.readouterr().err
 
 
-def test_launch_refuses_when_running(tmp_path: Path, no_spawn, capsys) -> None:
+def test_launch_refuses_when_running(tmp_path: Path, no_spawn, monkeypatch, capsys) -> None:
     import os
 
     run = launcher.run_dir()
     run.mkdir(parents=True)
     (run / "p.pid").write_text(f"{os.getpid()}\n")  # our own pid: definitely alive
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: f"/usr/bin/{name}")
     rc = launcher.main(["launch", "--name", "p", "--workspace", str(tmp_path)])
     assert rc == 1
     assert "already has a running" in capsys.readouterr().err
@@ -137,29 +138,61 @@ class FakeProc:
 
 
 class FakeResp:
-    def __init__(self, status: int) -> None:
+    def __init__(self, status: int, payload: object | None = None) -> None:
         self.status_code = status
+        self._payload = payload
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise launcher.httpx.HTTPStatusError("err", request=None, response=None)  # type: ignore[arg-type]
+
+    def json(self) -> object:
+        return self._payload
+
+    @property
+    def is_success(self) -> bool:
+        return 200 <= self.status_code < 300
+
+
+def _stub_launch_http(monkeypatch: pytest.MonkeyPatch, *, sessions: list | None = None) -> None:
+    def fake_get(url, **kwargs):
+        if str(url).endswith("/session"):
+            return FakeResp(200, sessions if sessions is not None else [])
+        return FakeResp(200)
+
+    def fake_post(url, **kwargs):
+        return FakeResp(200, {"id": "ses_new"})
+
+    monkeypatch.setattr(launcher.httpx, "get", fake_get)
+    monkeypatch.setattr(launcher.httpx, "post", fake_post)
+    monkeypatch.setattr(launcher, "port_listening", lambda *a, **k: True)
+    monkeypatch.setattr(launcher, "wait_for_opencode", lambda *a, **k: True)
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: f"/usr/bin/{name}")
 
 
 def test_launch_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
     calls: dict = {}
+    pops: list[list[str]] = []
 
     def fake_popen(cmd, **kwargs):
-        calls["cmd"] = cmd
-        calls["kwargs"] = kwargs
+        pops.append(list(cmd))
+        if list(cmd)[:2] == ["/usr/bin/opencode-a2a", "serve"]:
+            calls["cmd"] = cmd
+            calls["kwargs"] = kwargs
         return FakeProc()
 
-    monkeypatch.setattr(launcher.shutil, "which", lambda _: "/usr/bin/opencode-a2a")
+    _stub_launch_http(monkeypatch, sessions=[])
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: FakeResp(200))
+    monkeypatch.setattr(launcher, "port_listening", lambda *a, **k: False)
 
     rc = launcher.main(
         ["launch", "--name", "p", "--workspace", str(ws), "--opencode-port", "4101", "--a2a-port", "8101"]
     )
     assert rc == 0
     assert calls["cmd"] == ["/usr/bin/opencode-a2a", "serve"]
+    assert ["/usr/bin/opencode", "--port", "4101"] in pops
     kw = calls["kwargs"]
     assert kw["start_new_session"] is True
     token = json.loads(kw["env"]["A2A_STATIC_AUTH_CREDENTIALS"])[0]["token"]
@@ -171,8 +204,13 @@ def test_launch_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caps
     assert peer.opencode_port == 4101
     assert peer.workspace == str(ws.resolve())
     assert (launcher.run_dir() / "p.pid").read_text().strip() == "424242"
+    assert (launcher.run_dir() / "p.opencode.pid").read_text().strip() == "424242"
     out = capsys.readouterr().out
-    assert f"cd {ws.resolve()} && opencode --port 4101" in out
+    assert "Session title 'p' is ready" in out
+    from a2a_peers import state
+    from a2a_peers.state import SessionRef
+
+    assert state.get_session("p", "p") == SessionRef("opencode_session", "ses_new")
 
 
 def test_launch_force_stops_previous_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys) -> None:
@@ -189,9 +227,8 @@ def test_launch_force_stops_previous_process(tmp_path: Path, monkeypatch: pytest
     monkeypatch.setattr(launcher, "pid_alive", lambda pid: alive.get(pid, False))
     monkeypatch.setattr(launcher, "_is_group_leader", lambda pid: True)
     monkeypatch.setattr(launcher.os, "killpg", fake_killpg)
-    monkeypatch.setattr(launcher.shutil, "which", lambda _: "/usr/bin/opencode-a2a")
     monkeypatch.setattr(launcher.subprocess, "Popen", lambda cmd, **kw: FakeProc())
-    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: FakeResp(200))
+    _stub_launch_http(monkeypatch)
 
     assert launcher.main(["launch", "--name", "p", "--workspace", str(tmp_path), "--force"]) == 0
     assert signalled and signalled[0][0] == 111
@@ -206,9 +243,8 @@ def test_launch_reuses_registry_token(tmp_path: Path, monkeypatch: pytest.Monkey
         seen["env"] = kwargs["env"]
         return FakeProc()
 
-    monkeypatch.setattr(launcher.shutil, "which", lambda _: "/usr/bin/opencode-a2a")
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: FakeResp(200))
+    _stub_launch_http(monkeypatch)
 
     assert launcher.main(["launch", "--name", "p", "--workspace", str(tmp_path)]) == 0
     assert json.loads(seen["env"]["A2A_STATIC_AUTH_CREDENTIALS"])[0]["token"] == "existing"
@@ -227,7 +263,7 @@ def test_launch_process_died(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, ca
         kwargs["stdout"].write(b"boom: port in use\n")
         return DeadProc()
 
-    monkeypatch.setattr(launcher.shutil, "which", lambda _: "/usr/bin/opencode-a2a")
+    monkeypatch.setattr(launcher.shutil, "which", lambda name: f"/usr/bin/{name}")
     monkeypatch.setattr(launcher.subprocess, "Popen", fake_popen)
     assert launcher.main(["launch", "--name", "p", "--workspace", str(tmp_path)]) == 1
     err = capsys.readouterr().err
@@ -336,3 +372,23 @@ def test_kill_running_group(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
 
 def test_tui_command_quotes_workspace() -> None:
     assert launcher._tui_command("/tmp/my ws", 4101) == "cd '/tmp/my ws' && opencode --port 4101"
+
+
+def test_ensure_titled_session_reuses_existing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        launcher.httpx,
+        "get",
+        lambda *a, **k: FakeResp(200, [{"id": "ses_old", "title": "p"}]),
+    )
+
+    def no_post(*a, **k):  # pragma: no cover
+        raise AssertionError("POST /session must not be called")
+
+    monkeypatch.setattr(launcher.httpx, "post", no_post)
+    assert launcher.ensure_titled_session(4101, "p", "/ws") == "ses_old"
+
+
+def test_ensure_titled_session_creates(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(launcher.httpx, "get", lambda *a, **k: FakeResp(200, []))
+    monkeypatch.setattr(launcher.httpx, "post", lambda *a, **k: FakeResp(200, {"id": "ses_new"}))
+    assert launcher.ensure_titled_session(4101, "p", "/ws") == "ses_new"

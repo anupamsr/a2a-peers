@@ -507,7 +507,23 @@ class A2AClient:
             entry = self._session_entry(item)
             if entry is not None:
                 out.append(entry)
+        untitled = [e for e in out if not e.get("title")]
+        if untitled:
+            filled = await asyncio.gather(
+                *(self._title_from_get(e["id"]) for e in untitled),
+                return_exceptions=True,
+            )
+            for entry, title in zip(untitled, filled, strict=True):
+                if isinstance(title, str) and title:
+                    entry["title"] = title
         return out
+
+    async def _title_from_get(self, session_id: str) -> str | None:
+        try:
+            return (await self.get_opencode_session(session_id)).get("title")
+        except A2AError as e:
+            log.debug("sessions.get %s failed while filling titles: %s", session_id, e)
+            return None
 
     async def get_opencode_session(self, session_id: str) -> dict:
         result = await self.jsonrpc("opencode.sessions.get", {"session_id": session_id})

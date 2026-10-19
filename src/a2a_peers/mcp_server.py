@@ -128,11 +128,19 @@ async def list_sessions(peer: str) -> str:
             card = await asyncio.wait_for(client.get_card(), CARD_TIMEOUT_SECONDS)
             if card.is_opencode:
                 items = await asyncio.wait_for(client.list_opencode_sessions(limit=50), LIST_TIMEOUT_SECONDS)
+                cached_titles = {
+                    ref.id: name
+                    for name, ref in (cached or {}).items()
+                    if ref.kind == "opencode_session"
+                }
                 lines.append("Opencode sessions (address titled ones by exact title):")
                 if not items:
                     lines.append("- (none)")
                 for item in items:
                     title = item.get("title")
+                    sid = item.get("id")
+                    if not (isinstance(title, str) and title.strip()) and isinstance(sid, str):
+                        title = cached_titles.get(sid)
                     label = repr(title) if isinstance(title, str) and title.strip() else "(untitled)"
                     lines.append(f"- {label} id={item.get('id')}")
     except TimeoutError:

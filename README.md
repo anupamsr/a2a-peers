@@ -50,14 +50,13 @@ uv tool install opencode-a2a                  # only needed to expose opencode s
 ```bash
 a2a-peers launch --name api --workspace ~/src/my-api
 # Started opencode-a2a for 'api' ...
-# Now start the opencode TUI for this peer (peer calls fail until it is running):
-#   cd ~/src/my-api && opencode --port 41234
+# Started opencode for 'api' ...
+# Session title 'api' is ready (id ses_...). Ask this peer with session='api'.
 ```
 
-Run the printed command. That TUI *is* the peer: A2A messages land in its sessions and you can
-watch and interact with them. Sessions are addressed by **exact session title**, so give the sessions
-you want reachable a distinct title (rename it in the TUI's session list, or set it via the opencode
-server API: `PATCH /session/<id>` with `{"title": "..."}`). Use `list_sessions` to see current titles.
+That TUI *is* the peer: A2A messages land in its sessions and you can watch and interact with them.
+`launch` starts opencode itself and creates a session titled the same as the peer name. Extra
+sessions you want reachable still need a distinct title (`list_sessions` shows current titles).
 
 Other commands:
 

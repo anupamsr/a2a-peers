@@ -560,15 +560,25 @@ async def test_list_sessions_extracts_titles() -> None:
         },
         {"id": "ses_b", "metadata": {"shared": {"session": {"id": "ses_b"}}}},
     ]
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if body["method"] == "opencode.sessions.get":
+            return rpc_ok(
+                {"item": {"id": "ses_b", "metadata": {"shared": {"session": {"id": "ses_b", "title": "beta"}}}}}
+            )
+        return rpc_ok({"items": items})
+
     routes = card_route(OPENCODE_CARD)
-    routes[("POST", "/")] = lambda r: rpc_ok({"items": items})
+    routes[("POST", "/")] = handler
     client, rec = make_client(routes)
     async with client:
         out = await client.list_opencode_sessions(search="spike", limit=5)
-    assert out == [{"id": "ses_a", "title": "spike-alpha"}, {"id": "ses_b", "title": None}]
-    body = rec.bodies("POST", "/")[0]
-    assert body["method"] == "opencode.sessions.list"
-    assert body["params"] == {"limit": 5, "search": "spike", "roots": True}
+    assert out == [{"id": "ses_a", "title": "spike-alpha"}, {"id": "ses_b", "title": "beta"}]
+    bodies = rec.bodies("POST", "/")
+    assert bodies[0]["method"] == "opencode.sessions.list"
+    assert bodies[0]["params"] == {"limit": 5, "search": "spike", "roots": True}
+    assert bodies[1]["method"] == "opencode.sessions.get"
+    assert bodies[1]["params"] == {"session_id": "ses_b"}
 
 
 async def test_list_sessions_retries_without_roots_on_upstream_error() -> None:
@@ -584,7 +594,8 @@ async def test_list_sessions_retries_without_roots_on_upstream_error() -> None:
     async with client:
         out = await client.list_opencode_sessions()
     assert out == [{"id": "ses_a", "title": None}]
-    assert [b["params"] for b in rec.bodies("POST", "/")] == [{"limit": 20, "roots": True}, {"limit": 20}]
+    listed = [b for b in rec.bodies("POST", "/") if b["method"] == "opencode.sessions.list"]
+    assert [b["params"] for b in listed] == [{"limit": 20, "roots": True}, {"limit": 20}]
 
 
 async def test_get_session_and_not_found() -> None:

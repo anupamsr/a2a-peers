@@ -145,6 +145,16 @@ async def test_list_sessions_opencode(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "'alpha' id=ses_1" in out and "(untitled) id=ses_2" in out
 
 
+async def test_list_sessions_uses_cache_title_for_untitled(monkeypatch: pytest.MonkeyPatch) -> None:
+    state.set_session("oc", "test", SessionRef("opencode_session", "ses_2"))
+    use_clients(
+        monkeypatch,
+        {"oc": FakeClient(sessions=[{"id": "ses_1", "title": "alpha"}, {"id": "ses_2", "title": None}])},
+    )
+    out = await call("list_sessions", peer="oc")
+    assert "'alpha' id=ses_1" in out and "'test' id=ses_2" in out
+
+
 async def test_unknown_peer(monkeypatch: pytest.MonkeyPatch) -> None:
     use_clients(monkeypatch, {})
     out = await call("ask_peer", peer="nope", session="s", message="hi")

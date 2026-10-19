@@ -19,16 +19,19 @@ from pathlib import Path
 
 import httpx
 
-from a2a_peers import registry
+from a2a_peers import registry, state
 from a2a_peers.a2a_client import CARD_PATH, OPENCODE_SESSION_EXT, is_loopback_url
 from a2a_peers.paths import run_dir
 from a2a_peers.registry import Peer, RegistryError
+from a2a_peers.state import SessionRef
 
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 OPENCODE_A2A_BIN = "opencode-a2a"
+OPENCODE_BIN = "opencode"
 STARTUP_TIMEOUT = 10.0
 KILL_GRACE = 5.0
 LOG_TAIL_LINES = 30
+OPENCODE_WAIT = 120.0
 
 
 class LauncherError(Exception):
@@ -153,7 +156,99 @@ def log_tail(path: Path, lines: int = LOG_TAIL_LINES) -> str:
 
 
 def _tui_command(workspace: Path | str, opencode_port: int) -> str:
-    return f"cd {shlex.quote(str(workspace))} && opencode --port {opencode_port}"
+    return f"cd {shlex.quote(str(workspace))} && {OPENCODE_BIN} --port {opencode_port}"
+
+
+def opencode_pid_file(name: str) -> Path:
+    return run_dir() / f"{name}.opencode.pid"
+
+
+def read_opencode_pid(name: str) -> int | None:
+    path = opencode_pid_file(name)
+    try:
+        return int(path.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def _require_binary(name: str, install_hint: str) -> str:
+    binary = shutil.which(name)
+    if binary is None:
+        raise LauncherError(f"`{name}` not found on PATH; {install_hint}")
+    return binary
+
+
+def wait_for_opencode(port: int, timeout: float = OPENCODE_WAIT) -> bool:
+    """True if opencode's HTTP API answers on `port` before `timeout` seconds."""
+    health = f"http://127.0.0.1:{port}/global/health"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if httpx.get(health, timeout=1.0, trust_env=False).is_success:
+                return True
+        except httpx.HTTPError:
+            pass
+        time.sleep(0.3)
+    return False
+
+
+def ensure_titled_session(opencode_port: int, title: str, workspace: Path | str) -> str:
+    """Create an opencode session named `title` if none exists. Returns the session id."""
+    base = f"http://127.0.0.1:{opencode_port}"
+    params = {"directory": str(workspace)}
+    try:
+        resp = httpx.get(f"{base}/session", params=params, timeout=5.0, trust_env=False)
+        resp.raise_for_status()
+        sessions = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise LauncherError(f"cannot list opencode sessions on port {opencode_port}: {exc}") from exc
+    if not isinstance(sessions, list):
+        raise LauncherError(f"unexpected /session response from opencode on port {opencode_port}")
+    for item in sessions:
+        if isinstance(item, dict) and item.get("title") == title and isinstance(item.get("id"), str):
+            return item["id"]
+    try:
+        resp = httpx.post(
+            f"{base}/session",
+            params=params,
+            json={"title": title},
+            timeout=5.0,
+            trust_env=False,
+        )
+        resp.raise_for_status()
+        created = resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        raise LauncherError(f"cannot create opencode session {title!r}: {exc}") from exc
+    sid = created.get("id") if isinstance(created, dict) else None
+    if not isinstance(sid, str) or not sid:
+        raise LauncherError(f"opencode created session {title!r} but returned no id")
+    return sid
+
+
+def start_opencode(name: str, workspace: Path, opencode_port: int) -> subprocess.Popen[bytes]:
+    binary = _require_binary(
+        OPENCODE_BIN,
+        "install opencode and make sure its bin directory is on PATH",
+    )
+    existing = read_opencode_pid(name)
+    if existing is not None and pid_alive(existing):
+        raise LauncherError(
+            f"peer {name!r} already has a running opencode (pid {existing}); "
+            f"use `a2a-peers kill {name}` first or pass --force"
+        )
+    log_path = log_file(name)
+    with open(log_path, "ab") as log_fh:
+        log_fh.write(f"\n--- starting {OPENCODE_BIN} --port {opencode_port} ---\n".encode())
+        proc = subprocess.Popen(
+            [binary, "--port", str(opencode_port)],
+            cwd=str(workspace),
+            stdin=subprocess.DEVNULL,
+            stdout=log_fh,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    opencode_pid_file(name).write_text(f"{proc.pid}\n")
+    return proc
 
 
 def _is_group_leader(pid: int) -> bool:
@@ -181,23 +276,27 @@ def cmd_launch(args: argparse.Namespace) -> int:
     workspace = resolve_workspace(args.workspace)
 
     existing_pid = read_pid(name)
-    if existing_pid is not None and pid_alive(existing_pid):
+    existing_oc = read_opencode_pid(name)
+    running = (existing_pid is not None and pid_alive(existing_pid)) or (
+        existing_oc is not None and pid_alive(existing_oc)
+    )
+    if running:
         if not args.force:
             raise LauncherError(
-                f"peer {name!r} already has a running opencode-a2a (pid {existing_pid}); "
+                f"peer {name!r} already has a running process; "
                 f"use `a2a-peers kill {name}` first or pass --force"
             )
-        _warn(f"--force: stopping the previous opencode-a2a for {name!r} (pid {existing_pid}) first")
+        _warn(f"--force: stopping the previous processes for {name!r} first")
         cmd_kill(argparse.Namespace(name=name, forget=False))
 
     opencode_port, a2a_port = pick_ports(args.opencode_port, args.a2a_port)
 
-    binary = shutil.which(OPENCODE_A2A_BIN)
-    if binary is None:
-        raise LauncherError(
-            f"`{OPENCODE_A2A_BIN}` not found on PATH; install it (e.g. `uv tool install opencode-a2a`) "
-            "and make sure its bin directory is on PATH"
-        )
+    binary = _require_binary(
+        OPENCODE_A2A_BIN,
+        "install it (e.g. `uv tool install --force --editable /path/to/opencode-a2a`) "
+        "and make sure its bin directory is on PATH",
+    )
+    _require_binary(OPENCODE_BIN, "install opencode and make sure its bin directory is on PATH")
 
     previous = registry.load_peers().get(name)
     if previous is not None and previous.token:
@@ -256,9 +355,24 @@ def cmd_launch(args: argparse.Namespace) -> int:
         print(f"A2A endpoint is up: {url}")
     else:
         _warn(f"A2A endpoint {url} did not answer within {STARTUP_TIMEOUT:.0f}s; check {log_path}")
-    print()
-    print("Now start the opencode TUI for this peer (peer calls fail until it is running):")
-    print(f"  {_tui_command(workspace, opencode_port)}")
+
+    if port_listening(opencode_port):
+        print(f"Reusing opencode already listening on port {opencode_port}.")
+    else:
+        oc = start_opencode(name, workspace, opencode_port)
+        print(f"Started opencode for {name!r} (pid {oc.pid}) on port {opencode_port}.")
+
+    if not wait_for_opencode(opencode_port):
+        _warn(
+            f"opencode on port {opencode_port} did not answer within {OPENCODE_WAIT:.0f}s; "
+            f"check {log_path}. Session {name!r} was not created."
+        )
+        print(f"Start it yourself with: {_tui_command(workspace, opencode_port)}")
+        return 0
+
+    session_id = ensure_titled_session(opencode_port, name, workspace)
+    state.set_session(name, name, SessionRef("opencode_session", session_id))
+    print(f"Session title {name!r} is ready (id {session_id}). Ask this peer with session={name!r}.")
     return 0
 
 
@@ -274,31 +388,69 @@ def cmd_list(args: argparse.Namespace) -> int:
     if not peers:
         print("No peers registered.")
         return 0
-    header = ("NAME", "A2A URL", "OC PORT", "OC LISTENING", "A2A PROC", "WORKSPACE")
-    rows = [header]
+    rows: list[list[str]] = [["NAME", "A2A URL", "OC PORT", "OC LISTENING", "A2A PROC", "WORKSPACE"]]
     for peer in peers.values():
         if peer.opencode_port is not None:
             listening = "yes" if port_listening(peer.opencode_port) else "no"
         else:
             listening = "-"
         rows.append(
-            (
+            [
                 peer.name,
                 peer.url,
                 str(peer.opencode_port) if peer.opencode_port is not None else "-",
                 listening,
                 _process_status(peer.name),
                 peer.workspace or "-",
-            )
+            ]
         )
-    widths = [max(len(r[i]) for r in rows) for i in range(len(header))]
+    widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
     for row in rows:
         print("  ".join(cell.ljust(w) for cell, w in zip(row, widths, strict=True)).rstrip())
     return 0
 
 
+def _stop_pid(name: str, pid: int, pfile: Path, label: str) -> None:
+    if not pid_alive(pid):
+        pfile.unlink(missing_ok=True)
+        print(f"{label} for {name!r} (pid {pid}) is not running; removed stale pid file.")
+        return
+    if not _is_group_leader(pid):
+        pfile.unlink(missing_ok=True)
+        _warn(
+            f"pid {pid} from {pfile} is alive but is not a process-group leader (pid reused?); "
+            "not signalling it. Removed the pid file."
+        )
+        return
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    deadline = time.monotonic() + KILL_GRACE
+    while time.monotonic() < deadline and pid_alive(pid):
+        time.sleep(0.1)
+    if pid_alive(pid):
+        try:
+            os.killpg(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        print(f"Sent SIGKILL to {label} for {name!r} (pid {pid}).")
+    else:
+        print(f"Stopped {label} for {name!r} (pid {pid}).")
+    pfile.unlink(missing_ok=True)
+
+
 def cmd_kill(args: argparse.Namespace) -> int:
     name = validate_name(args.name)
+    oc_pid = read_opencode_pid(name)
+    oc_file = opencode_pid_file(name)
+    if oc_pid is None:
+        if oc_file.exists():
+            _warn(f"pid file {oc_file} is unreadable; removing it")
+            oc_file.unlink(missing_ok=True)
+    else:
+        _stop_pid(name, oc_pid, oc_file, "opencode")
+
     pid = read_pid(name)
     pfile = pid_file(name)
     if pid is None:
@@ -309,32 +461,8 @@ def cmd_kill(args: argparse.Namespace) -> int:
         if not args.forget and name in registry.load_peers():
             extra = f" It is still in the registry (`a2a-peers kill {name} --forget` to remove it)."
         print(f"No launched opencode-a2a process for {name!r} (no pid file).{extra}")
-    elif not pid_alive(pid):
-        pfile.unlink(missing_ok=True)
-        print(f"opencode-a2a for {name!r} (pid {pid}) is not running; removed stale pid file.")
-    elif not _is_group_leader(pid):
-        pfile.unlink(missing_ok=True)
-        _warn(
-            f"pid {pid} from {pfile} is alive but is not a process-group leader (pid reused?); "
-            "not signalling it. Removed the pid file."
-        )
     else:
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pass
-        deadline = time.monotonic() + KILL_GRACE
-        while time.monotonic() < deadline and pid_alive(pid):
-            time.sleep(0.1)
-        if pid_alive(pid):
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            print(f"Sent SIGKILL to opencode-a2a for {name!r} (pid {pid}).")
-        else:
-            print(f"Stopped opencode-a2a for {name!r} (pid {pid}).")
-        pfile.unlink(missing_ok=True)
+        _stop_pid(name, pid, pfile, "opencode-a2a")
 
     if args.forget:
         if registry.remove_peer(name):
@@ -409,7 +537,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("launch", help="start opencode-a2a for a workspace and register it")
+    p = sub.add_parser(
+        "launch", help="start opencode-a2a and opencode for a workspace, and create a titled session"
+    )
     p.add_argument("--name", required=True)
     p.add_argument("--workspace", required=True)
     p.add_argument("--opencode-port", type=int)
