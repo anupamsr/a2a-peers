@@ -1,0 +1,44 @@
+[project]
+name = "a2a-peers"
+version = "0.1.0"
+description = "MCP server + launcher that lets coding agents (opencode, Cursor, ...) talk to A2A peer agents by named session."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.2",
+    "httpx>=0.27",
+]
+
+[project.scripts]
+a2a-peers = "a2a_peers.launcher:main"
+a2a-peers-mcp = "a2a_peers.mcp_server:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/a2a_peers"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "BLE", "TRY", "PYI"]
+ignore = ["E501", "TRY003", "TRY300", "TRY301", "TRY004", "PYI034"]
+
+[tool.ruff.lint.per-file-ignores]
+# MCP tools must never raise: broad catches are intentional and turned into readable errors.
+"src/a2a_peers/mcp_server.py" = ["BLE001"]
+"src/a2a_peers/resolver.py" = ["BLE001"]
