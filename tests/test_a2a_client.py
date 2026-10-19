@@ -10,10 +10,12 @@ import pytest
 
 from a2a_peers.a2a_client import (
     OPENCODE_EXTENSIONS,
+    OPENCODE_MODEL_EXT,
     OPENCODE_SESSION_EXT,
     A2AClient,
     A2AError,
     is_loopback_url,
+    parse_model,
 )
 
 BASE = "http://peer.test"
@@ -147,13 +149,46 @@ async def test_opencode_peer_gets_extension_and_auth_headers() -> None:
     assert req.headers["Authorization"] == "Bearer secret"
     assert req.headers["A2A-Version"] == "1.0"
     assert req.headers["A2A-Extensions"] == ", ".join(OPENCODE_EXTENSIONS)
-    assert len(OPENCODE_EXTENSIONS) == 5
+    assert len(OPENCODE_EXTENSIONS) == 6
     msg = json.loads(req.content)["message"]
     assert msg["role"] == "ROLE_USER"
     assert msg["parts"] == [{"text": "hello"}]
     assert msg["metadata"] == {"shared": {"session": {"id": SES}}}
     assert msg["messageId"]
     assert "contextId" not in msg
+
+
+async def test_ask_includes_shared_model_when_given() -> None:
+    routes = card_route(OPENCODE_CARD)
+    routes[("POST", "/message:stream")] = lambda r: sse_response(
+        sse(task_event(), text_chunk("hi", last=True), status_event("TASK_STATE_COMPLETED"))
+    )
+    client, rec = make_client(routes)
+    async with client:
+        res = await client.ask("hello", opencode_session_id=SES, model="llmgw/grok-4.6")
+    assert res.state == "TASK_STATE_COMPLETED"
+    msg = json.loads(rec.last("POST", "/message:stream").content)["message"]
+    assert msg["metadata"] == {
+        "shared": {
+            "session": {"id": SES},
+            "model": {"providerID": "llmgw", "modelID": "grok-4.6"},
+        }
+    }
+    assert OPENCODE_MODEL_EXT in rec.last("POST", "/message:stream").headers["A2A-Extensions"]
+
+
+@pytest.mark.parametrize(
+    "bad",
+    ["", "grok-4.6", "/grok", "llmgw/", "llmgw", "  /  "],
+)
+def test_parse_model_rejects_malformed(bad: str) -> None:
+    with pytest.raises(ValueError, match="provider/modelID"):
+        parse_model(bad)
+
+
+def test_parse_model_accepts_provider_slash_id() -> None:
+    assert parse_model("llmgw/grok-4.6") == ("llmgw", "grok-4.6")
+    assert parse_model(" google/gemini-3-pro ") == ("google", "gemini-3-pro")
 
 
 async def test_generic_peer_no_extensions_no_auth_and_falls_back_to_send() -> None:
@@ -560,11 +595,17 @@ async def test_list_sessions_extracts_titles() -> None:
         },
         {"id": "ses_b", "metadata": {"shared": {"session": {"id": "ses_b"}}}},
     ]
+
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if body["method"] == "opencode.sessions.get":
             return rpc_ok(
-                {"item": {"id": "ses_b", "metadata": {"shared": {"session": {"id": "ses_b", "title": "beta"}}}}}
+                {
+                    "item": {
+                        "id": "ses_b",
+                        "metadata": {"shared": {"session": {"id": "ses_b", "title": "beta"}}},
+                    }
+                }
             )
         return rpc_ok({"items": items})
 

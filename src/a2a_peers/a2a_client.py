@@ -19,8 +19,10 @@ import httpx
 log = logging.getLogger(__name__)
 
 OPENCODE_SESSION_EXT = "urn:opencode-a2a:extension:session-binding:v1"
+OPENCODE_MODEL_EXT = "urn:opencode-a2a:extension:model-selection:v1"
 OPENCODE_EXTENSIONS: list[str] = [
     OPENCODE_SESSION_EXT,
+    OPENCODE_MODEL_EXT,
     "urn:opencode-a2a:extension:session-management:v1",
     "urn:opencode-a2a:extension:interactive-interrupt:v1",
     "urn:opencode-a2a:extension:interrupt-recovery:v1",
@@ -140,6 +142,14 @@ def _dig(obj: Any, *keys: str) -> Any:
 
 def _opt_str(v: Any) -> str | None:
     return v if isinstance(v, str) and v else None
+
+
+def parse_model(model: str) -> tuple[str, str]:
+    """Split ``provider/modelID`` (e.g. ``llmgw/grok-4.6``). Raises ValueError if malformed."""
+    provider, sep, model_id = model.strip().partition("/")
+    if not sep or not provider or not model_id:
+        raise ValueError(f"model must be 'provider/modelID' (got {model!r})")
+    return provider, model_id
 
 
 def _parts_text(parts: Any) -> str:
@@ -548,6 +558,7 @@ class A2AClient:
         *,
         context_id: str | None = None,
         opencode_session_id: str | None = None,
+        model: str | None = None,
         stream: bool = True,
         timeout: float | None = None,
     ) -> AskResult:
@@ -559,8 +570,14 @@ class A2AClient:
         }
         if context_id:
             message["contextId"] = context_id
+        shared: dict[str, Any] = {}
         if opencode_session_id:
-            message["metadata"] = {"shared": {"session": {"id": opencode_session_id}}}
+            shared["session"] = {"id": opencode_session_id}
+        if model:
+            provider, model_id = parse_model(model)
+            shared["model"] = {"providerID": provider, "modelID": model_id}
+        if shared:
+            message["metadata"] = {"shared": shared}
         body = {"message": message}
         try:
             async with asyncio.timeout(limit):
@@ -677,6 +694,7 @@ async def _iter_sse(resp: httpx.Response) -> AsyncIterator[dict]:
 
 __all__ = [
     "OPENCODE_EXTENSIONS",
+    "OPENCODE_MODEL_EXT",
     "OPENCODE_SESSION_EXT",
     "A2AClient",
     "A2AError",

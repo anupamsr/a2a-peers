@@ -33,9 +33,10 @@ Tools for talking to other AI agents ("peers") over the A2A protocol, addressed 
 Only use them when the user explicitly asks to contact another agent or session.
 - list_peers: show configured peers, whether they are reachable, and what they can do.
 - list_sessions(peer): show session names known for a peer (cached names and, for opencode peers, titled sessions).
-- ask_peer(peer, session, message): send a message to a named session on a peer and return its reply.
+- ask_peer(peer, session, message, model?): send a message to a named session on a peer and return its reply.
   For opencode peers the session must already exist with that exact title in the peer's TUI.
   For other peers an unknown session name starts a new conversation and remembers it.
+  Optional `model` is `provider/modelID` (e.g. `llmgw/grok-4.6`) and overrides the peer's default for that turn.
   If the peer needs a permission approval, the reply says so; the user approves it in the peer's TUI, then ask again.
 - forget_session(peer, session): drop the cached mapping for a session name.
 Results starting with "ERROR:" are failures; relay them to the user instead of retrying blindly.
@@ -129,9 +130,7 @@ async def list_sessions(peer: str) -> str:
             if card.is_opencode:
                 items = await asyncio.wait_for(client.list_opencode_sessions(limit=50), LIST_TIMEOUT_SECONDS)
                 cached_titles = {
-                    ref.id: name
-                    for name, ref in (cached or {}).items()
-                    if ref.kind == "opencode_session"
+                    ref.id: name for name, ref in (cached or {}).items() if ref.kind == "opencode_session"
                 }
                 lines.append("Opencode sessions (address titled ones by exact title):")
                 if not items:
@@ -210,26 +209,38 @@ def _format_result(peer: str, session: str, result: AskResult, timeout_seconds: 
 
 
 async def _ask_opencode(
-    client: A2AClient, card: AgentCard, peer: str, session: str, message: str, timeout: float
+    client: A2AClient,
+    card: AgentCard,
+    peer: str,
+    session: str,
+    message: str,
+    timeout: float,
+    model: str | None,
 ) -> AskResult:
     was_cached = state.get_session(peer, session) is not None
     ref = await resolver.resolve(client, card, peer, session, create=False)
     assert ref is not None  # opencode peers never return None
-    result = await client.ask(message, opencode_session_id=ref.id, timeout=timeout)
+    result = await client.ask(message, opencode_session_id=ref.id, model=model, timeout=timeout)
     if was_cached and result.state == "TASK_STATE_FAILED" and result.error_type == STALE_OPENCODE_ERROR:
         log.info("cached opencode session %s for %s/%s is gone; re-resolving", ref.id, peer, session)
         resolver.invalidate(peer, session)
         ref = await resolver.resolve(client, card, peer, session, create=False)
         assert ref is not None
-        result = await client.ask(message, opencode_session_id=ref.id, timeout=timeout)
+        result = await client.ask(message, opencode_session_id=ref.id, model=model, timeout=timeout)
     return result
 
 
 async def _ask_generic(
-    client: A2AClient, card: AgentCard, peer: str, session: str, message: str, timeout: float
+    client: A2AClient,
+    card: AgentCard,
+    peer: str,
+    session: str,
+    message: str,
+    timeout: float,
+    model: str | None,
 ) -> tuple[AskResult, str]:
     ref = await resolver.resolve(client, card, peer, session, create=True)
-    result = await client.ask(message, context_id=ref.id if ref else None, timeout=timeout)
+    result = await client.ask(message, context_id=ref.id if ref else None, model=model, timeout=timeout)
     note = ""
     if ref is not None and result.state == "TASK_STATE_FAILED":
         log.info("cached context %s for %s/%s failed; retrying with a fresh context", ref.id, peer, session)
@@ -239,7 +250,7 @@ async def _ask_generic(
             "started a new conversation.\n"
         )
         ref = None
-        result = await client.ask(message, timeout=timeout)
+        result = await client.ask(message, model=model, timeout=timeout)
     if ref is None and result.context_id:
         state.set_session(peer, session, SessionRef("context", result.context_id))
     return result, note
@@ -249,10 +260,13 @@ async def _ask_generic(
     description=(
         f"{GUARD} Sends `message` to the named `session` on A2A peer `peer` and returns the reply. "
         "Opencode peers: the session must exist with that exact title. Other peers: a new session name "
-        "starts a new conversation. Replies starting with 'ERROR:' are failures."
+        "starts a new conversation. Optional `model` is `provider/modelID` (e.g. `llmgw/grok-4.6`) "
+        "and overrides the peer default for this turn only. Replies starting with 'ERROR:' are failures."
     )
 )
-async def ask_peer(peer: str, session: str, message: str, timeout_seconds: int = 1200) -> str:
+async def ask_peer(
+    peer: str, session: str, message: str, timeout_seconds: int = 1200, model: str | None = None
+) -> str:
     try:
         p = registry.get_peer(peer)
     except RegistryError as exc:
@@ -260,6 +274,14 @@ async def ask_peer(peer: str, session: str, message: str, timeout_seconds: int =
     except Exception as exc:
         return _error(f"cannot load peer registry: {_describe_exc(exc)}")
     timeout = float(max(1, timeout_seconds))
+    model = model.strip() if isinstance(model, str) and model.strip() else None
+    if model is not None:
+        from a2a_peers.a2a_client import parse_model
+
+        try:
+            parse_model(model)
+        except ValueError as exc:
+            return _error(str(exc))
     try:
         async with client_factory(p) as client:
             try:
@@ -267,10 +289,10 @@ async def ask_peer(peer: str, session: str, message: str, timeout_seconds: int =
             except TimeoutError:
                 return _error(f"peer '{peer}' ({p.url}) is unreachable: no agent card in time")
             if card.is_opencode:
-                result = await _ask_opencode(client, card, peer, session, message, timeout)
+                result = await _ask_opencode(client, card, peer, session, message, timeout, model)
                 note = ""
             else:
-                result, note = await _ask_generic(client, card, peer, session, message, timeout)
+                result, note = await _ask_generic(client, card, peer, session, message, timeout, model)
             return note + _format_result(peer, session, result, timeout_seconds)
     except (SessionNotFound, AmbiguousSession) as exc:
         return _error(str(exc))

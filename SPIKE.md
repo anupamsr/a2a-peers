@@ -14,6 +14,7 @@ Every opencode-specific feature gets rejected unless you list its extension URI 
 | `opencode.sessions.list` / `.get` / `.messages.list` | `urn:opencode-a2a:extension:session-management:v1` (NOT in the card's `capabilities.extensions`) |
 | `a2a.interrupt.permission.reply` / `question.reply` / `question.reject` | `urn:opencode-a2a:extension:interactive-interrupt:v1` |
 | `opencode.permissions.list` / `opencode.questions.list` | `urn:opencode-a2a:extension:interrupt-recovery:v1` |
+| `message.metadata.shared.model` on message:send/stream | `urn:opencode-a2a:extension:model-selection:v1` |
 | `block_type` + progress metadata in SSE | `urn:opencode-a2a:extension:stream-hints:v1` (optional) |
 
 Without the header, REST returns HTTP 400:

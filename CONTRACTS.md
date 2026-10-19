@@ -51,7 +51,7 @@ def forget_peer(peer: str) -> None
 
 ## IMPORTANT: corrections from SPIKE.md (authoritative where it differs from below)
 - Every request: `Authorization: Bearer <t>`, `A2A-Version: 1.0`; for opencode peers also
-  `A2A-Extensions: urn:opencode-a2a:extension:session-binding:v1, urn:opencode-a2a:extension:session-management:v1, urn:opencode-a2a:extension:interactive-interrupt:v1, urn:opencode-a2a:extension:interrupt-recovery:v1, urn:opencode-a2a:extension:stream-hints:v1`.
+  `A2A-Extensions: urn:opencode-a2a:extension:session-binding:v1, urn:opencode-a2a:extension:model-selection:v1, urn:opencode-a2a:extension:session-management:v1, urn:opencode-a2a:extension:interactive-interrupt:v1, urn:opencode-a2a:extension:interrupt-recovery:v1, urn:opencode-a2a:extension:stream-hints:v1`.
 - We patched opencode-a2a (local editable install): `roots` now works, and `opencode.sessions.list` / `.get`
   items carry the title at `item.metadata.shared.session.title` (absent if the session has no title).
   Older plugin versions omit it -> resolver falls back to `search` (case-insensitive substring) and treats a
@@ -76,6 +76,8 @@ A2A 1.0 HTTP+JSON binding as served by opencode-a2a 1.3.6:
 - Message shape: `{"messageId": uuid, "role": "ROLE_USER", "parts": [{"text": "..."}], "contextId"?: str, "metadata"?: {...}}`.
 - Task states: `TASK_STATE_SUBMITTED|WORKING|COMPLETED|FAILED|CANCELED|REJECTED|INPUT_REQUIRED|AUTH_REQUIRED`.
 - Opencode session binding: `message.metadata = {"shared": {"session": {"id": "<opencode session id>"}}}`.
+- Optional model override: `message.metadata.shared.model = {"providerID": "...", "modelID": "..."}`
+  (requires `urn:opencode-a2a:extension:model-selection:v1` in `A2A-Extensions`).
 - Opencode peer detection: card `capabilities.extensions[].uri` contains `urn:opencode-a2a:extension:session-binding:v1`.
 - Interrupt details (opencode): status message/metadata at `metadata.shared.interrupt` = `{request_id, type, phase, details?}`.
 
@@ -112,7 +114,7 @@ class A2AClient:
     async def __aenter__/__aexit__
     async def get_card(self) -> AgentCard
     async def ask(self, text: str, *, context_id: str | None = None,
-                  opencode_session_id: str | None = None,
+                  opencode_session_id: str | None = None, model: str | None = None,
                   stream: bool = True, timeout: float | None = None) -> AskResult
         # stream=True uses message:stream; returns early (state INPUT_REQUIRED/AUTH_REQUIRED) with
         # `interrupt` populated as soon as such a status arrives. Overall timeout -> state "TIMEOUT".
@@ -139,9 +141,10 @@ async def resolve(client: A2AClient, card: AgentCard, peer: str, name: str, *, c
 
 - `list_peers()` -> per peer: name, url, reachable, agent name, skills, is_opencode.
 - `list_sessions(peer)` -> cached names + (opencode) titled root sessions (id, title).
-- `ask_peer(peer, session, message, timeout_seconds=1200)` -> reply text, or a clear multi-line
+- `ask_peer(peer, session, message, timeout_seconds=1200, model=None)` -> reply text, or a clear multi-line
   explanation for INPUT_REQUIRED (peer, session, interrupt type, details, request id,
   "approve it in that session, then ask again"), FAILED, TIMEOUT, unknown session.
+  `model` is optional `provider/modelID` (e.g. `llmgw/grok-4.6`); sent as `metadata.shared.model`.
   On a cached ref that FAILS, invalidate the cache entry and resolve again once.
   Generic peers: unknown name -> new context, cache returned contextId.
 - `forget_session(peer, session)`.

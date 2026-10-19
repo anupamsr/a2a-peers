@@ -80,10 +80,18 @@ class FakeClient:
         *,
         context_id: str | None = None,
         opencode_session_id: str | None = None,
+        model: str | None = None,
         stream: bool = True,
         timeout: float | None = None,
     ) -> FakeAskResult:
-        self.asks.append({"text": text, "context_id": context_id, "opencode_session_id": opencode_session_id})
+        self.asks.append(
+            {
+                "text": text,
+                "context_id": context_id,
+                "opencode_session_id": opencode_session_id,
+                "model": model,
+            }
+        )
         return self.results.pop(0)
 
     async def list_opencode_sessions(
@@ -172,6 +180,7 @@ async def test_ask_opencode_completed_and_cached(monkeypatch: pytest.MonkeyPatch
     use_clients(monkeypatch, {"oc": client})
     assert await call("ask_peer", peer="oc", session="alpha", message="hi") == "PINEAPPLE"
     assert client.asks[0]["opencode_session_id"] == "ses_2"
+    assert client.asks[0]["model"] is None
     assert state.get_session("oc", "alpha") == SessionRef("opencode_session", "ses_2")
     n = len(client.list_calls)
     out = await call("ask_peer", peer="oc", session="alpha", message="again")
@@ -315,3 +324,21 @@ async def test_failed_message_not_doubled(monkeypatch: pytest.MonkeyPatch) -> No
     use_clients(monkeypatch, {"oc": client})
     out = await call("ask_peer", peer="oc", session="alpha", message="hi")
     assert out == "ERROR: peer 'oc' session 'alpha' failed: boom"
+
+
+async def test_ask_peer_forwards_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient(
+        sessions=[{"id": "ses_1", "title": "alpha"}],
+        results=[FakeAskResult("TASK_STATE_COMPLETED", "ok")],
+    )
+    use_clients(monkeypatch, {"oc": client})
+    assert await call("ask_peer", peer="oc", session="alpha", message="hi", model="llmgw/grok-4.6") == "ok"
+    assert client.asks[0]["model"] == "llmgw/grok-4.6"
+
+
+async def test_ask_peer_rejects_bad_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient(sessions=[{"id": "ses_1", "title": "alpha"}])
+    use_clients(monkeypatch, {"oc": client})
+    out = await call("ask_peer", peer="oc", session="alpha", message="hi", model="grok-4.6")
+    assert out.startswith("ERROR:") and "provider/modelID" in out
+    assert client.asks == []

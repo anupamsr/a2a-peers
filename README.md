@@ -61,7 +61,7 @@ sessions you want reachable still need a distinct title (`list_sessions` shows c
 Other commands:
 
 ```bash
-a2a-peers list                 # peers, ports, process status, session id
+a2a-peers list                 # peers, ports, process status, attach command
 a2a-peers check api            # card, auth (expects 401 without token), opencode reachable
 a2a-peers kill api [--forget]  # stop opencode-a2a (and remove from registry)
 a2a-peers add other --url https://agent.example.com [--token T]   # register a non-opencode A2A agent
@@ -101,6 +101,7 @@ Tools only run when you explicitly ask:
 - *"list a2a peers"* → `list_peers`
 - *"what sessions does peer api have?"* → `list_sessions`
 - *"ask peer api, session auth-research: where is the refresh token rotated?"* → `ask_peer`
+  (optional: pass `model` as `provider/modelID`, e.g. `llmgw/grok-4.6`, to override that turn)
 - *"forget session auth-research on api"* → `forget_session` (drops the cached name → id mapping)
 
 Behaviour:
