@@ -3,6 +3,8 @@ name = "a2a-peers"
 version = "0.1.0"
 description = "MCP server + launcher that lets coding agents (opencode, Cursor, ...) talk to A2A peer agents by named session."
 readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 requires-python = ">=3.11"
 dependencies = [
     "mcp>=1.2",

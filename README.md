@@ -144,3 +144,8 @@ uvx ruff check src tests && uvx ruff format --check src tests
 
 `CONTRACTS.md` describes module interfaces; `SPIKE.md` records the empirically verified
 opencode-a2a protocol behaviour the client relies on.
+
+## License
+
+Licensed under the GNU General Public License v3.0 or later (GPL-3.0-or-later).
+See [`LICENSE`](LICENSE) for the full text.
